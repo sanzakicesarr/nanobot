@@ -1,0 +1,2 @@
+# NanoBot – Keine externen Abhängigkeiten nötig
+# Nutzt nur Python Standard Library + urllib
