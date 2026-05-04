@@ -1,0 +1,13 @@
+services:
+  nanobot:
+    build: .
+    container_name: nanobot
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - /opt/nanobot-project/data:/app/data:rw
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: "256M"
