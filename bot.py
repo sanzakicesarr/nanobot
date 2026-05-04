@@ -1,38 +1,56 @@
 #!/usr/bin/env python3
-"""NanoBot – mit Tool-System (Claude Code inspiriert)"""
+"""NanoBot – Gemini 2.5 Flash (1M Kontext, $0)"""
 import logging, json, time, urllib.request
-from config import TOKEN, OLLAMA_URL, MODEL, ALLOWED_USERS
-from tool_system import TOOLS, tool_list_prompt, execute_tool
+from config import TOKEN, GEMINI_KEY, GEMINI_URL, ALLOWED_USERS, MAX_CONTEXT
+from tool_system import tool_list_prompt, execute_tool
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 OFFSET = 0
 
-SYSTEM = {
-    "role": "system",
-    "content": (
-        "Du bist NanoBot, ein lokaler AI-Assistent auf Sans Server. "
-        "Läufst auf llama3.1:8b lokal, null Kosten. "
-        "Antworte auf Deutsch, kurz und hilfreich.\n\n"
-        "WENN der User eine Datei lesen/schreiben/auflisten oder "
-        "einen Befehl ausführen will, antworte NUR mit:\n"
-        "TOOL: tool_name\nparam1=wert1\nparam2=wert2\n\n"
-        "Dann wird das Tool ausgeführt und du kriegst das Ergebnis."
-        f"{tool_list_prompt()}"
-    )
-}
+try:
+    with open("/app/data/memory.json") as f:
+        MEMORY = json.load(f)
+except:
+    MEMORY = {"about_user": "", "facts": [], "conversations": []}
 
-def ollama(messages):
-    data = json.dumps({"model": MODEL, "messages": messages, "stream": False}).encode()
-    req = urllib.request.Request(OLLAMA_URL, data=data, headers={"Content-Type":"application/json"})
-    resp = urllib.request.urlopen(req, timeout=120)
-    return json.loads(resp.read())["message"]["content"]
+def save_memory():
+    with open("/app/data/memory.json", 'w') as f:
+        json.dump(MEMORY, f, indent=2)
+
+SYSTEM_PROMPT = (
+    "Du bist NanoBot, Sans persönlicher KI-Agent. Läufst auf Gemini 2.5 Flash, 1M Kontext, $0 Kosten.\n"
+    "Antworte auf Deutsch. Sei ein AGENT: locker, direkt, erledigt Sachen.\n"
+    "Du hast PERSÖNLICHKEIT: humorvoll, manchmal frech, aber immer hilfreich.\n"
+    f"{tool_list_prompt()}"
+)
+
+if MEMORY.get("about_user"):
+    SYSTEM_PROMPT += f"\nInfo über den User: {MEMORY['about_user']}"
+
+def gemini(messages):
+    """Ruft Gemini API auf"""
+    parts = [{"text": m["content"]} for m in messages]
+    data = json.dumps({
+        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "contents": [{"parts": [{"text": m["content"]} for m in messages]}],
+        "generationConfig": {"maxOutputTokens": 2000, "temperature": 0.7}
+    }).encode()
+    
+    url = f"{GEMINI_URL}?key={GEMINI_KEY}"
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    resp = urllib.request.urlopen(req, timeout=30)
+    result = json.loads(resp.read())
+    return result["candidates"][0]["content"]["parts"][0]["text"]
 
 def send(chat_id, text):
     data = json.dumps({"chat_id": chat_id, "text": text[:4000]}).encode()
     urllib.request.urlopen(urllib.request.Request(f"https://api.telegram.org/bot{TOKEN}/sendMessage", data=data, headers={"Content-Type":"application/json"}), timeout=10)
 
-history = [SYSTEM]
-logging.info("🤖 NanoBot mit Tool-System gestartet")
+def typing(chat_id):
+    urllib.request.urlopen(f"https://api.telegram.org/bot{TOKEN}/sendChatAction?chat_id={chat_id}&action=typing", timeout=5)
+
+history = []
+logging.info(f"🚀 NanoBot auf Gemini 2.5 Flash (1M Kontext)")
 
 while True:
     try:
@@ -44,33 +62,21 @@ while True:
             if cid not in ALLOWED_USERS or not text:
                 continue
             
+            typing(int(cid))
             logging.info(f"📨 {text[:50]}")
-            history.append({"role":"user","content":text})
+            history.append({"role": "user", "content": text})
             
-            # LLM antwortet
-            reply = ollama(history)
-            
-            # Prüfen ob Tool-Call
-            if reply.strip().startswith("TOOL:"):
-                lines = reply.strip().split("\n")
-                tool_name = lines[0].replace("TOOL:","").strip()
-                kwargs = {}
-                for l in lines[1:]:
-                    if "=" in l:
-                        k, v = l.split("=", 1)
-                        kwargs[k.strip()] = v.strip()
-                logging.info(f"🔧 Tool: {tool_name} {kwargs}")
-                result = execute_tool(tool_name, **kwargs)
-                history.append({"role":"assistant","content":f"Tool-Ergebnis: {result}"})
-                # LLM bekommt das Ergebnis zur Antwort
-                reply = ollama(history)
+            # Gemini Call
+            reply = gemini(history)
             
             send(int(cid), reply)
-            history.append({"role":"assistant","content":reply})
-            # History kurz halten
-            if len(history) > 10:
-                history = [SYSTEM] + history[-8:]
-            logging.info(f"📬 {len(reply)} Zeichen")
+            history.append({"role": "assistant", "content": reply})
+            
+            MEMORY["conversations"].append({"time": time.time(), "text": text[:100]})
+            MEMORY["conversations"] = MEMORY["conversations"][-20:]
+            save_memory()
+            
+            logging.info(f"📬 {len(reply)} Zeichen | History: {len(history)} Messages")
     except Exception as e:
         logging.error(f"🔄 {e}")
         time.sleep(5)
